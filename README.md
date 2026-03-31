@@ -72,5 +72,3 @@ experience to a deployed, database-backed web application.
 
 Built by [Nirvan Sinha](https://github.com/nirvansinha5)
 ```
-
----
