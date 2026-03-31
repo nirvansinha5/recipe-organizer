@@ -374,9 +374,10 @@ body {
   color: #784212;
 }
 
-/* Cuisine & equipment — selected */
+/* Cuisine, equipment, protein type — selected */
 #filter-cuisine.filter-chip-multi .chip-toggle input:checked + span,
-#filter-equipment.filter-chip-multi .chip-toggle input:checked + span {
+#filter-equipment.filter-chip-multi .chip-toggle input:checked + span,
+#filter-protein-type.filter-chip-multi .chip-toggle input:checked + span {
   background: #d4edda;
   border-color: #2d6a4f;
   color: #2d6a4f;
@@ -793,6 +794,61 @@ body {
   z-index: 9999;
 }
 
+#modal-form-unsaved.modal-backdrop {
+  z-index: 9998;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+#modal-form-unsaved.modal-backdrop .modal-panel {
+  position: relative;
+  z-index: 9999;
+}
+
+.form-unsaved-panel {
+  max-width: 420px;
+  border-radius: 12px;
+}
+
+.form-unsaved-actions {
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 12px;
+}
+
+.btn-form-unsaved-back {
+  background: #e07a2f;
+  color: #fff;
+  border: none;
+}
+
+.btn-form-unsaved-back:hover {
+  background: #c96a28;
+  color: #fff;
+}
+
+.btn-form-unsaved-continue {
+  background: #2d6a4f;
+  color: #fff;
+  border: none;
+}
+
+.btn-form-unsaved-continue:hover {
+  background: #245a43;
+  color: #fff;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .modal-panel {
   background: var(--bg-card);
   border-radius: var(--radius);
@@ -975,6 +1031,66 @@ body {
 .tag-input-row input {
   flex: 1;
   min-width: 120px;
+}
+
+.protein-type-field .protein-type-input-wrap {
+  position: relative;
+}
+
+.protein-type-suggestions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+.protein-type-suggestions.hidden {
+  display: none;
+}
+
+.protein-type-suggestion {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.protein-type-suggestion:hover,
+.protein-type-suggestion:focus {
+  background: var(--bg-page);
+  outline: none;
+}
+
+.form-hint-muted {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  color: #6b6b6b;
+}
+
+.detail-protein-types-block {
+  margin-top: 8px;
+}
+
+.detail-protein-types-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
 }
 
 .ingredient-rows {

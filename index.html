@@ -60,6 +60,10 @@
               <label>Equipment</label>
               <div class="multi-select filter-chip-multi" id="filter-equipment"></div>
             </div>
+            <div class="filter-group">
+              <label>Protein Type</label>
+              <div class="multi-select filter-chip-multi" id="filter-protein-type"></div>
+            </div>
             <div class="sort-group">
               <label>Sort By</label>
               <select id="sort-select" aria-label="Sort recipes">
@@ -172,6 +176,19 @@
       </div>
     </div>
 
+    <div class="modal-backdrop" id="modal-form-unsaved" role="dialog" aria-modal="true" aria-labelledby="form-unsaved-title">
+      <div class="modal-panel form-unsaved-panel">
+        <div class="modal-body">
+          <p id="form-unsaved-title" class="visually-hidden">Unsaved changes</p>
+          <p class="confirm-message">You have unsaved changes. Are you sure you want to close?</p>
+          <div class="modal-actions form-unsaved-actions">
+            <button type="button" class="btn btn-form-unsaved-back" id="form-unsaved-go-back">Go Back</button>
+            <button type="button" class="btn btn-form-unsaved-continue" id="form-unsaved-continue">Continue</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal-backdrop" id="modal-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title">
       <div class="modal-panel wide">
         <div class="modal-header">
@@ -234,6 +251,24 @@
               <div class="form-field">
                 <label for="form-protein">Protein (Grams)</label>
                 <input id="form-protein" name="protein_grams" type="number" min="0" step="1" />
+              </div>
+              <div class="form-field full protein-type-field">
+                <label for="protein-type-input">Protein type</label>
+                <div class="tag-input-row protein-type-input-wrap">
+                  <input
+                    type="text"
+                    id="protein-type-input"
+                    placeholder="Click or type to choose…"
+                    autocomplete="off"
+                    aria-haspopup="listbox"
+                    aria-expanded="false"
+                  />
+                  <div id="protein-type-suggestions" class="protein-type-suggestions hidden" role="listbox"></div>
+                </div>
+                <div id="protein-type-chips" class="badges" style="margin-top: 8px"></div>
+                <p id="protein-type-autohint" class="form-hint-muted hidden" aria-live="polite">
+                  Auto-detected from recipe name — adjust if needed
+                </p>
               </div>
               <div class="form-field full">
                 <label>Equipment Needed</label>

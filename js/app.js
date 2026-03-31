@@ -17,6 +17,15 @@
   let formIngredientRows = [];
   /** Instruction step texts (display order); serialized with numbered prefixes on save. */
   let formInstructionSteps = [];
+  /** Lowercase protein type slugs (allowed set only). */
+  let formProteinTypes = [];
+  /** Snapshot from last openFormModal for dirty detection. */
+  let formInitialSnapshot = null;
+  /** Slugs removed from protein types by user; auto-detect skips until recipe name changes. */
+  const proteinTypeUserRemoved = new Set();
+  let lastDebouncedNameForProtein = '';
+  let formNameDebounceTimer = null;
+  let proteinAutoHintTimer = null;
 
   let asyncLoadingDepth = 0;
 
@@ -31,6 +40,49 @@
       options: ['whole', 'clove', 'slice', 'piece', 'sprig', 'bunch', 'handful', 'stalk', 'head', 'sheet', 'can', 'package'],
     },
     { label: 'Other', options: ['pinch', 'dash', 'drop', 'to taste', 'as needed'] },
+  ];
+
+  const PROTEIN_TYPE_ORDER = [
+    'chicken',
+    'beef',
+    'pork',
+    'fish',
+    'seafood',
+    'egg',
+    'tofu',
+    'lamb',
+    'turkey',
+    'veggies',
+    'other',
+  ];
+
+  const PROTEIN_TYPE_ALLOWED = new Set(PROTEIN_TYPE_ORDER);
+
+  const PROTEIN_TYPE_LABELS = {
+    chicken: 'Chicken',
+    beef: 'Beef',
+    pork: 'Pork',
+    fish: 'Fish',
+    seafood: 'Seafood',
+    egg: 'Egg',
+    tofu: 'Tofu',
+    lamb: 'Lamb',
+    turkey: 'Turkey',
+    veggies: 'Veggies',
+    other: 'Other',
+  };
+
+  const PROTEIN_KEYWORD_RULES = [
+    [/\b(chicken|hen)\b/, 'chicken'],
+    [/\b(beef|steak|brisket)\b/, 'beef'],
+    [/\b(pork|sausage|bacon|ham|pancetta)\b/, 'pork'],
+    [/\b(salmon|tuna|cod|tilapia|fish|trout|halibut|mahi)\b/, 'fish'],
+    [/\b(shrimp|prawn|lobster|crab|scallop|seafood|squid|calamari)\b/, 'seafood'],
+    [/\b(egg|eggs)\b/, 'egg'],
+    [/\btofu\b/, 'tofu'],
+    [/\b(lamb|mutton)\b/, 'lamb'],
+    [/\bturkey\b/, 'turkey'],
+    [/\b(veggie|vegan|vegetarian|plant)\b/, 'veggies'],
   ];
 
   // --- Global async loading overlay (all Supabase calls) --------------------
@@ -103,6 +155,224 @@
         if (e.target === modal) finish(false);
       };
     });
+  }
+
+  /** Unsaved form close: Go Back = false, Continue = discard and close. */
+  function showFormUnsavedConfirm() {
+    return new Promise((resolve) => {
+      const modal = $('#modal-form-unsaved');
+      const goBack = $('#form-unsaved-go-back');
+      const cont = $('#form-unsaved-continue');
+      if (!modal || !goBack || !cont) {
+        resolve(false);
+        return;
+      }
+      modal.classList.add('is-open');
+
+      function finish(stayOnForm) {
+        modal.classList.remove('is-open');
+        goBack.onclick = null;
+        cont.onclick = null;
+        modal.onclick = null;
+        resolve(!stayOnForm);
+      }
+
+      goBack.onclick = () => finish(true);
+      cont.onclick = () => finish(false);
+      modal.onclick = (e) => {
+        if (e.target === modal) finish(true);
+      };
+    });
+  }
+
+  function formatDisplayWords(str) {
+    const s = String(str || '').trim();
+    if (!s) return '';
+    return s
+      .split(/\s+/)
+      .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ''))
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  function formatDisplayCuisine(raw) {
+    return formatDisplayWords(raw);
+  }
+
+  function formatDisplayEquipment(raw) {
+    return formatDisplayWords(raw);
+  }
+
+  function formatDisplayProteinType(slug) {
+    const k = String(slug || '').trim().toLowerCase();
+    return PROTEIN_TYPE_LABELS[k] || formatDisplayWords(k);
+  }
+
+  function normalizeCuisineForSave(raw) {
+    const t = String(raw || '').trim().toLowerCase();
+    return t || null;
+  }
+
+  function normalizeProteinTypeArray(arr) {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const x of arr) {
+      const k = String(x || '').trim().toLowerCase();
+      if (PROTEIN_TYPE_ALLOWED.has(k) && !out.includes(k)) out.push(k);
+    }
+    return PROTEIN_TYPE_ORDER.filter((k) => out.includes(k));
+  }
+
+  function detectProteinTypesFromName(nameLower) {
+    const out = [];
+    for (const [re, type] of PROTEIN_KEYWORD_RULES) {
+      if (re.test(nameLower) && !out.includes(type)) out.push(type);
+    }
+    return out;
+  }
+
+  function getFormState() {
+    return {
+      name: $('#form-name').value.trim(),
+      image_url: $('#form-image').value.trim(),
+      prep_time: $('#form-prep').value.trim(),
+      servings: $('#form-servings').value.trim(),
+      difficulty: $('#form-difficulty').value,
+      cost_estimate: $('#form-cost').value,
+      cuisine: $('#form-cuisine').value.trim(),
+      protein_grams: $('#form-protein').value.trim(),
+      equipment: [...formEquipment].map((e) => String(e).trim().toLowerCase()).filter(Boolean).sort(),
+      protein_type: [...formProteinTypes].map((p) => String(p).trim().toLowerCase()).filter(Boolean).sort(),
+      ingredients: formIngredientRows.map((r) => ({
+        name: String(r.name || '').trim().toLowerCase(),
+        quantity: String(r.quantity || '').trim(),
+        unit: String(r.unit || '').trim(),
+      })),
+      instructions: formInstructionSteps.map((s) => String(s || '').trim()),
+    };
+  }
+
+  function isFormDirty() {
+    if (!formInitialSnapshot) return false;
+    return JSON.stringify(getFormState()) !== JSON.stringify(formInitialSnapshot);
+  }
+
+  async function requestCloseFormModal() {
+    if (!isFormDirty()) {
+      formInitialSnapshot = null;
+      closeModal($('#modal-form'));
+      return;
+    }
+    const discard = await showFormUnsavedConfirm();
+    if (discard) {
+      formInitialSnapshot = null;
+      closeModal($('#modal-form'));
+    }
+  }
+
+  function hideProteinTypeSuggestions() {
+    const box = $('#protein-type-suggestions');
+    const inp = $('#protein-type-input');
+    if (box) {
+      box.classList.add('hidden');
+      box.innerHTML = '';
+    }
+    if (inp) inp.setAttribute('aria-expanded', 'false');
+  }
+
+  function showProteinAutoHint() {
+    const el = $('#protein-type-autohint');
+    if (!el) return;
+    el.classList.remove('hidden');
+    clearTimeout(proteinAutoHintTimer);
+    proteinAutoHintTimer = setTimeout(() => {
+      el.classList.add('hidden');
+    }, 3000);
+  }
+
+  function scheduleProteinDetectFromName() {
+    clearTimeout(formNameDebounceTimer);
+    formNameDebounceTimer = setTimeout(() => {
+      const name = $('#form-name').value;
+      const nameLower = name.toLowerCase();
+      if (nameLower !== lastDebouncedNameForProtein) {
+        proteinTypeUserRemoved.clear();
+        lastDebouncedNameForProtein = nameLower;
+      }
+      const detected = detectProteinTypesFromName(nameLower);
+      let added = false;
+      for (const t of detected) {
+        if (proteinTypeUserRemoved.has(t)) continue;
+        if (!formProteinTypes.includes(t)) {
+          formProteinTypes.push(t);
+          added = true;
+        }
+      }
+      if (added) {
+        formProteinTypes = normalizeProteinTypeArray(formProteinTypes);
+        renderProteinTypeChips();
+        updateProteinTypeSuggestions();
+        showProteinAutoHint();
+      }
+    }, 600);
+  }
+
+  function renderProteinTypeChips() {
+    const wrap = $('#protein-type-chips');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    formProteinTypes.forEach((slug, idx) => {
+      const span = document.createElement('span');
+      span.className = 'badge badge-accent';
+      span.style.cursor = 'pointer';
+      span.title = 'Click to remove';
+      span.textContent = `${formatDisplayProteinType(slug)} ×`;
+      span.addEventListener('click', () => {
+        proteinTypeUserRemoved.add(slug);
+        formProteinTypes.splice(idx, 1);
+        renderProteinTypeChips();
+        updateProteinTypeSuggestions();
+      });
+      wrap.appendChild(span);
+    });
+  }
+
+  function updateProteinTypeSuggestions() {
+    const box = $('#protein-type-suggestions');
+    const inp = $('#protein-type-input');
+    if (!box || !inp) return;
+    const q = inp.value.trim().toLowerCase();
+    const avail = PROTEIN_TYPE_ORDER.filter((slug) => {
+      if (formProteinTypes.includes(slug)) return false;
+      if (!q) return true;
+      const label = formatDisplayProteinType(slug).toLowerCase();
+      return label.includes(q) || slug.includes(q);
+    });
+    box.innerHTML = '';
+    avail.forEach((slug) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'protein-type-suggestion';
+      btn.setAttribute('role', 'option');
+      btn.textContent = formatDisplayProteinType(slug);
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', () => {
+        formProteinTypes = normalizeProteinTypeArray([...formProteinTypes, slug]);
+        inp.value = '';
+        renderProteinTypeChips();
+        updateProteinTypeSuggestions();
+        hideProteinTypeSuggestions();
+        inp.focus();
+      });
+      box.appendChild(btn);
+    });
+    if (!avail.length) {
+      box.classList.add('hidden');
+      inp.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    box.classList.remove('hidden');
+    inp.setAttribute('aria-expanded', 'true');
   }
 
   function setLibraryLoading(on) {
@@ -181,22 +451,27 @@
     const equipSet = new Set();
     recipes.forEach((r) => (r.equipment || []).forEach((e) => equipSet.add(e)));
     const equipment = Array.from(equipSet).sort((a, b) => a.localeCompare(b));
+    const proteinTypeSet = new Set();
+    recipes.forEach((r) => (r.protein_type || []).forEach((p) => proteinTypeSet.add(p)));
+    const proteinTypes = Array.from(proteinTypeSet).sort((a, b) => a.localeCompare(b));
 
     renderChipGroup('#filter-difficulty', 'diff', difficulties);
-    renderChipGroup('#filter-cuisine', 'cuisine', cuisines);
+    renderChipGroup('#filter-cuisine', 'cuisine', cuisines, formatDisplayCuisine);
     renderChipGroup('#filter-cost', 'cost', costs);
-    renderChipGroup('#filter-equipment', 'eq', equipment);
+    renderChipGroup('#filter-equipment', 'eq', equipment, formatDisplayEquipment);
+    renderChipGroup('#filter-protein-type', 'ptype', proteinTypes, formatDisplayProteinType);
   }
 
-  function renderChipGroup(containerSel, prefix, values) {
+  function renderChipGroup(containerSel, prefix, values, displayFn) {
     const container = $(containerSel);
     if (!container) return;
+    const fmt = displayFn || ((v) => v);
     container.innerHTML = '';
     values.forEach((val, i) => {
       const id = `${prefix}-${i}-${String(val).replace(/\s+/g, '-')}`;
       const label = document.createElement('label');
       label.className = 'chip-toggle';
-      label.innerHTML = `<input type="checkbox" name="${prefix}" value="${escapeAttr(val)}" id="${id}" /><span>${escapeHtml(val)}</span>`;
+      label.innerHTML = `<input type="checkbox" name="${prefix}" value="${escapeAttr(val)}" id="${id}" /><span>${escapeHtml(fmt(val))}</span>`;
       container.appendChild(label);
     });
     container.querySelectorAll('input').forEach((inp) => inp.addEventListener('change', applyFiltersAndRender));
@@ -222,6 +497,7 @@
     const cuisine = getCheckedValues('#filter-cuisine');
     const cost = getCheckedValues('#filter-cost');
     const equip = getCheckedValues('#filter-equipment');
+    const proteinType = getCheckedValues('#filter-protein-type');
     const sortVal = $('#sort-select') ? $('#sort-select').value : 'prep_asc';
 
     const searchEl = $('#recipe-search');
@@ -241,6 +517,12 @@
       list = list.filter((r) => {
         const set = new Set(r.equipment || []);
         return equip.every((e) => set.has(e));
+      });
+    }
+    if (proteinType.length) {
+      list = list.filter((r) => {
+        const set = new Set(r.protein_type || []);
+        return proteinType.some((p) => set.has(p));
       });
     }
 
@@ -349,7 +631,7 @@
     if (recipe.cuisine) {
       const b = document.createElement('span');
       b.className = 'badge badge-cuisine-outline';
-      b.textContent = recipe.cuisine;
+      b.textContent = formatDisplayCuisine(recipe.cuisine);
       badges.appendChild(b);
     }
 
@@ -550,7 +832,7 @@
     }
 
     const equipBadges = (recipe.equipment || [])
-      .map((e) => `<span class="badge badge-equipment-detail">${escapeHtml(e)}</span>`)
+      .map((e) => `<span class="badge badge-equipment-detail">${escapeHtml(formatDisplayEquipment(e))}</span>`)
       .join(' ');
 
     const ingredients = (recipe.ingredients || [])
@@ -567,11 +849,20 @@
     const metaBits = [
       recipe.difficulty ? escapeHtml(recipe.difficulty) : '',
       recipe.cost_estimate ? escapeHtml(recipe.cost_estimate) : '',
-      recipe.cuisine ? escapeHtml(recipe.cuisine) : '',
+      recipe.cuisine ? escapeHtml(formatDisplayCuisine(recipe.cuisine)) : '',
       `${escapeHtml(String(serv))} servings (base)`,
     ]
       .filter(Boolean)
       .join(' · ');
+
+    const ptList = normalizeProteinTypeArray(recipe.protein_type || []);
+    const proteinTypeBlock =
+      ptList.length > 0
+        ? `<div class="detail-protein-types-block">
+        <span class="detail-protein-types-label">Protein type</span>
+        <div class="badges">${ptList.map((p) => `<span class="badge badge-diff-easy">${escapeHtml(formatDisplayProteinType(p))}</span>`).join(' ')}</div>
+      </div>`
+        : '';
 
     body.innerHTML = `
       ${heroHtml}
@@ -579,6 +870,7 @@
         ${prepLine}
         ${metaBits ? `<p class="detail-meta-secondary">${metaBits}</p>` : ''}
         ${proteinLine}
+        ${proteinTypeBlock}
       </div>
       <div class="detail-section">
         <h3>Equipment</h3>
@@ -760,11 +1052,19 @@
     $('#form-servings').value = isEdit && recipe.servings != null ? recipe.servings : 4;
     $('#form-difficulty').value = isEdit ? recipe.difficulty || 'Easy' : 'Easy';
     $('#form-cost').value = isEdit ? recipe.cost_estimate || 'Low' : 'Low';
-    $('#form-cuisine').value = isEdit ? recipe.cuisine || '' : '';
+    $('#form-cuisine').value = isEdit ? formatDisplayCuisine(recipe.cuisine) : '';
     $('#form-protein').value = isEdit && recipe.protein_grams != null ? recipe.protein_grams : '';
 
     formInstructionSteps = parseInstructionsFromDb(isEdit ? recipe.instructions : '');
     if (!formInstructionSteps.length) formInstructionSteps = [''];
+
+    formProteinTypes = isEdit ? normalizeProteinTypeArray(recipe.protein_type) : [];
+    proteinTypeUserRemoved.clear();
+    clearTimeout(proteinAutoHintTimer);
+    const pHint = $('#protein-type-autohint');
+    if (pHint) pHint.classList.add('hidden');
+    const ptInpOpen = $('#protein-type-input');
+    if (ptInpOpen) ptInpOpen.value = '';
 
     const summary = $('#form-error-summary');
     if (summary) {
@@ -773,7 +1073,9 @@
     }
     $$('#recipe-form .field-error').forEach((el) => el.classList.remove('field-error'));
 
-    formEquipment = isEdit ? [...(recipe.equipment || [])] : [];
+    formEquipment = isEdit
+      ? (recipe.equipment || []).map((x) => String(x).trim().toLowerCase()).filter(Boolean)
+      : [];
 
     formIngredientRows = [];
     if (isEdit && (recipe.ingredients || []).length) {
@@ -798,7 +1100,11 @@
     renderEquipmentChips();
     renderIngredientRows();
     renderInstructionSteps();
+    renderProteinTypeChips();
+    hideProteinTypeSuggestions();
+    lastDebouncedNameForProtein = $('#form-name').value.trim().toLowerCase();
 
+    formInitialSnapshot = getFormState();
     backdrop.classList.add('is-open');
   }
 
@@ -819,7 +1125,7 @@
       span.className = 'badge badge-accent';
       span.style.cursor = 'pointer';
       span.title = 'Click to remove';
-      span.textContent = `${tag} ×`;
+      span.textContent = `${formatDisplayEquipment(tag)} ×`;
       span.addEventListener('click', () => {
         formEquipment.splice(idx, 1);
         renderEquipmentChips();
@@ -939,6 +1245,10 @@
         return JSON.stringify({ name: nm, quantity: qty, unit });
       });
 
+    const equipLower = [...new Set(formEquipment.map((e) => String(e).trim().toLowerCase()).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b)
+    );
+
     const payload = {
       name: $('#form-name').value.trim(),
       image_url: $('#form-image').value.trim() || null,
@@ -946,9 +1256,10 @@
       servings: parseInt($('#form-servings').value, 10),
       difficulty: $('#form-difficulty').value,
       cost_estimate: $('#form-cost').value,
-      cuisine: $('#form-cuisine').value.trim() || null,
+      cuisine: normalizeCuisineForSave($('#form-cuisine').value),
       protein_grams: $('#form-protein').value === '' ? null : parseInt($('#form-protein').value, 10),
-      equipment: formEquipment.filter(Boolean),
+      protein_type: normalizeProteinTypeArray(formProteinTypes),
+      equipment: equipLower,
       ingredients: ingredientsJson,
       instructions: serializeInstructionSteps(formInstructionSteps),
     };
@@ -971,6 +1282,7 @@
       showError(error.message || 'Could not save recipe.');
       return;
     }
+    formInitialSnapshot = null;
     closeModal($('#modal-form'));
     await loadRecipes();
     await loadWeeklySelection();
@@ -1115,23 +1427,53 @@
     const confirmPanel = $('#modal-confirm .modal-panel');
     if (confirmPanel) confirmPanel.addEventListener('click', (e) => e.stopPropagation());
 
-    $('#form-close').addEventListener('click', () => closeModal($('#modal-form')));
-    $('#form-cancel').addEventListener('click', () => closeModal($('#modal-form')));
+    const formUnsavedPanel = $('#modal-form-unsaved .modal-panel');
+    if (formUnsavedPanel) formUnsavedPanel.addEventListener('click', (e) => e.stopPropagation());
+
+    $('#form-close').addEventListener('click', () => void requestCloseFormModal());
+    $('#form-cancel').addEventListener('click', () => void requestCloseFormModal());
     $('#modal-form').addEventListener('click', (e) => {
-      if (e.target === $('#modal-form')) closeModal($('#modal-form'));
+      if (e.target === $('#modal-form')) void requestCloseFormModal();
     });
 
     $('#recipe-form').addEventListener('submit', submitRecipeForm);
 
     const nameInp = $('#form-name');
-    if (nameInp) nameInp.addEventListener('input', updateNameCharCount);
+    if (nameInp) {
+      nameInp.addEventListener('input', () => {
+        updateNameCharCount();
+        scheduleProteinDetectFromName();
+      });
+    }
+
+    const ptInp = $('#protein-type-input');
+    const ptBox = $('#protein-type-suggestions');
+    if (ptInp && ptBox) {
+      ptInp.addEventListener('focus', () => {
+        ptBox.classList.remove('hidden');
+        updateProteinTypeSuggestions();
+      });
+      ptInp.addEventListener('input', () => updateProteinTypeSuggestions());
+      ptInp.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const first = ptBox.querySelector('.protein-type-suggestion');
+        if (first) first.click();
+      });
+      document.addEventListener('click', (e) => {
+        const wrap = $('.protein-type-input-wrap');
+        if (!wrap || wrap.contains(e.target)) return;
+        if (ptBox.classList.contains('hidden')) return;
+        hideProteinTypeSuggestions();
+      });
+    }
 
     $('#equipment-input').addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
-      const v = $('#equipment-input').value.trim();
+      const v = $('#equipment-input').value.trim().toLowerCase();
       if (!v) return;
-      if (!formEquipment.includes(v)) formEquipment.push(v);
+      if (!formEquipment.some((x) => x === v)) formEquipment.push(v);
       $('#equipment-input').value = '';
       renderEquipmentChips();
     });

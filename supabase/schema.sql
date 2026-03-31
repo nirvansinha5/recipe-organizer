@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS public.recipes (
   cost_estimate text CHECK (cost_estimate IN ('Low', 'Medium', 'High')),
   cuisine text,
   protein_grams integer,
+  protein_type text[] DEFAULT '{}',
   equipment text[] DEFAULT '{}',
   -- Each element is a JSON string: {"name":"olive oil","quantity":"2","unit":"tbsp"}
   ingredients text[] DEFAULT '{}',
@@ -186,3 +187,8 @@ ON CONFLICT (id) DO UPDATE SET
   ingredients = EXCLUDED.ingredients,
   instructions = EXCLUDED.instructions,
   servings = EXCLUDED.servings;
+
+-- ---------------------------------------------------------------------------
+-- Migration (run once on existing DB if table already existed without column):
+-- ALTER TABLE public.recipes ADD COLUMN IF NOT EXISTS protein_type text[] DEFAULT '{}';
+-- ---------------------------------------------------------------------------
