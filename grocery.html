@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meal Prep</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥗</text></svg>"
+    />
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <div id="async-loading-overlay" class="loading-overlay" aria-hidden="true">
+      <div class="loading-bar">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Loading…</span>
+      </div>
+    </div>
+
+    <div class="grocery-page">
+      <div class="page-top-nav">
+        <button type="button" class="btn btn-outline-muted" id="btn-back">← Back to Recipes</button>
+      </div>
+
+      <h1 class="grocery-page-title">Grocery list</h1>
+      <p class="text-muted-lead">Adjust servings per recipe; the list below updates automatically.</p>
+
+      <div id="page-loading" class="loading-bar" style="margin-bottom: 16px">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Loading…</span>
+      </div>
+
+      <section class="grocery-section" id="section-recipes">
+        <h2 class="grocery-section-title">This Week’s Recipes</h2>
+        <p id="recipes-empty-msg" class="empty-state hidden" style="padding: 20px; margin: 0">
+          Select recipes from the library to generate your grocery list
+        </p>
+        <div id="recipe-pick-list" class="recipe-pick-list"></div>
+      </section>
+
+      <section class="grocery-section grocery-list-box" id="section-grocery">
+        <h2 class="grocery-section-title">Grocery List</h2>
+        <p id="grocery-empty-ingredients" class="empty-state hidden" style="border: none; padding: 16px 0; margin: 0">
+          No ingredients found — make sure your recipes have ingredients added
+        </p>
+        <div class="grocery-toolbar hidden" id="grocery-toolbar">
+          <button type="button" class="btn btn-outline-muted btn-sm hidden" id="btn-clear-checked">Clear checked items</button>
+          <button type="button" class="btn btn-outline-muted btn-sm" id="btn-clear-all">Clear all</button>
+        </div>
+        <div id="grocery-lines"></div>
+        <div class="add-custom-actions">
+          <input
+            type="text"
+            id="input-custom-item"
+            placeholder="e.g. paper towels, zip-lock bags..."
+            autocomplete="off"
+          />
+          <button type="button" class="btn btn-grocery-primary" id="btn-add-custom">Add custom item</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="toast-error" class="toast-error" role="alert"></div>
+
+    <div class="modal-backdrop" id="modal-confirm" role="dialog" aria-modal="true">
+      <div class="modal-panel confirm-panel">
+        <div class="modal-body">
+          <p id="confirm-message" class="confirm-message"></p>
+          <div class="modal-actions confirm-actions">
+            <button type="button" class="btn btn-secondary" id="confirm-cancel">Cancel</button>
+            <button type="button" class="btn btn-danger" id="confirm-ok">OK</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script src="js/config.js"></script>
+    <script src="js/supabaseClient.js"></script>
+    <script src="js/ingredientMerge.js"></script>
+    <script src="js/grocery.js"></script>
+  </body>
+</html>

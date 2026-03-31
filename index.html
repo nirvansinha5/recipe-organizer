@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meal Prep</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥗</text></svg>"
+    />
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <!-- Full-screen subtle overlay while Supabase requests run -->
+    <div id="async-loading-overlay" class="loading-overlay" aria-hidden="true">
+      <div class="loading-bar">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Loading…</span>
+      </div>
+    </div>
+
+    <div id="app-shell" class="app-shell sidebar-expanded">
+      <div class="main-area">
+        <header class="app-header">
+          <h1 class="app-title">Meal Prep</h1>
+          <button type="button" class="btn btn-primary" id="btn-add-recipe">Add Recipe</button>
+        </header>
+
+        <div class="filter-bar" id="filter-bar">
+          <div class="slider-filters">
+            <div class="slider-field slider-field--prep">
+              <label>
+                <span>Max Prep Time</span>
+                <span class="slider-value slider-value--prep"><span id="slider-max-prep-val">120</span> min</span>
+              </label>
+              <input type="range" id="slider-max-prep" min="0" max="120" value="120" aria-label="Maximum prep time in minutes" />
+            </div>
+            <div class="slider-field slider-field--protein">
+              <label>
+                <span>Min Protein</span>
+                <span class="slider-value slider-value--protein"><span id="slider-min-protein-val">0</span>g</span>
+              </label>
+              <input type="range" id="slider-min-protein" min="0" max="100" value="0" aria-label="Minimum protein in grams" />
+            </div>
+          </div>
+          <div class="filter-bar-row">
+            <div class="filter-group">
+              <label>Difficulty</label>
+              <div class="multi-select filter-chip-multi" id="filter-difficulty"></div>
+            </div>
+            <div class="filter-group">
+              <label>Cuisine</label>
+              <div class="multi-select filter-chip-multi" id="filter-cuisine"></div>
+            </div>
+            <div class="filter-group">
+              <label>Cost Estimate</label>
+              <div class="multi-select filter-chip-multi" id="filter-cost"></div>
+            </div>
+            <div class="filter-group">
+              <label>Equipment</label>
+              <div class="multi-select filter-chip-multi" id="filter-equipment"></div>
+            </div>
+            <div class="sort-group">
+              <label>Sort By</label>
+              <select id="sort-select" aria-label="Sort recipes">
+                <option value="prep_asc">Prep time (shortest first)</option>
+                <option value="prep_desc">Prep time (longest first)</option>
+                <option value="protein_asc">Protein (low to high)</option>
+                <option value="protein_desc">Protein (high to low)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="search-bar-wrap search-bar-wrap--with-icon">
+          <span class="search-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="2" stroke-linecap="round">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.35-4.35" />
+            </svg>
+          </span>
+          <input
+            type="search"
+            id="recipe-search"
+            class="recipe-search-input"
+            placeholder="Search recipes..."
+            autocomplete="off"
+            aria-label="Search recipes by name"
+          />
+          <button type="button" class="search-clear hidden" id="recipe-search-clear" aria-label="Clear search">×</button>
+        </div>
+
+        <div id="library-loading" class="loading-bar hidden">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Loading recipes…</span>
+        </div>
+
+        <p id="grid-count" class="grid-count" aria-live="polite"></p>
+
+        <div id="recipe-grid" class="recipe-grid" aria-live="polite"></div>
+        <div id="empty-library" class="empty-state hidden">
+          <p>No recipes yet — add your first one</p>
+        </div>
+      </div>
+
+      <aside class="cart-sidebar" id="cart-sidebar" aria-label="This week cart">
+        <button type="button" class="cart-toggle" id="cart-toggle" aria-expanded="true" title="Toggle cart">
+          <span id="cart-toggle-icon" aria-hidden="true">›</span>
+        </button>
+        <div class="cart-inner">
+          <div class="cart-header-row">
+            <h2 class="cart-header-title">
+              <span class="cart-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M6 6h15l-1.5 9h-12z" />
+                  <path d="M6 6L5 3H2" />
+                  <circle cx="9" cy="20" r="1" fill="currentColor" stroke="none" />
+                  <circle cx="18" cy="20" r="1" fill="currentColor" stroke="none" />
+                </svg>
+              </span>
+              This Week
+              <span id="cart-count-badge" class="cart-count-badge is-hidden" aria-live="polite">0</span>
+            </h2>
+          </div>
+          <ul class="cart-list" id="cart-list"></ul>
+          <button type="button" class="btn-link-clear is-hidden" id="btn-clear-week">Clear This Week</button>
+          <p id="cart-empty" class="empty-state" style="padding: 24px 16px; border: none; box-shadow: none; margin: 0">
+            No recipes selected yet
+          </p>
+          <div class="cart-footer">
+            <button type="button" class="btn btn-primary" id="btn-grocery" disabled>Generate Grocery List</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Mobile: floating cart (hidden when empty; desktop hides via CSS) -->
+    <button type="button" id="mobile-cart-fab" class="mobile-cart-fab is-hidden" aria-label="Open this week cart">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path d="M6 6h15l-1.5 9h-12z" />
+        <path d="M6 6L5 3H2" />
+        <circle cx="9" cy="20" r="1" fill="currentColor" stroke="none" />
+        <circle cx="18" cy="20" r="1" fill="currentColor" stroke="none" />
+      </svg>
+      <span id="mobile-cart-fab-badge" class="mobile-cart-fab-badge is-hidden" aria-hidden="true">0</span>
+    </button>
+    <div id="mobile-cart-backdrop" class="mobile-cart-backdrop hidden" aria-hidden="true"></div>
+    <div id="mobile-cart-drawer" class="mobile-cart-drawer" aria-hidden="true" role="dialog" aria-label="This week">
+      <div class="mobile-cart-drawer-header">
+        <h2 class="mobile-cart-drawer-title">This Week</h2>
+        <button type="button" class="mobile-cart-drawer-close" id="mobile-cart-close" aria-label="Close">×</button>
+      </div>
+      <div class="mobile-cart-drawer-body">
+        <ul class="cart-list" id="mobile-cart-list"></ul>
+        <button type="button" class="btn-link-clear-mobile is-hidden" id="mobile-btn-clear-week">Clear This Week</button>
+        <p id="mobile-cart-empty" class="mobile-cart-empty">No recipes selected yet</p>
+      </div>
+      <div class="mobile-cart-drawer-footer">
+        <button type="button" class="btn btn-primary btn-block" id="mobile-btn-grocery" disabled>Generate Grocery List</button>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="modal-confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="modal-panel confirm-panel">
+        <div class="modal-body">
+          <p id="confirm-message" class="confirm-message"></p>
+          <div class="modal-actions confirm-actions">
+            <button type="button" class="btn btn-secondary" id="confirm-cancel">Cancel</button>
+            <button type="button" class="btn btn-danger" id="confirm-ok">OK</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="modal-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+      <div class="modal-panel wide">
+        <div class="modal-header">
+          <h2 id="detail-title">Recipe</h2>
+          <button type="button" class="modal-close" id="detail-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="detail-body"></div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="modal-form" role="dialog" aria-modal="true" aria-labelledby="form-title">
+      <div class="modal-panel wide">
+        <div class="modal-header">
+          <h2 id="form-title">Add Recipe</h2>
+          <button type="button" class="modal-close" id="form-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <form id="recipe-form" novalidate>
+            <input type="hidden" id="form-recipe-id" name="id" value="" />
+            <div id="form-error-summary" class="form-error-summary hidden" role="alert"></div>
+            <div class="form-grid">
+              <div class="form-field full">
+                <label for="form-name">Recipe Name</label>
+                <input id="form-name" name="name" type="text" maxlength="60" required />
+                <span id="form-name-count" class="char-count">0 / 60</span>
+              </div>
+              <div class="form-field full">
+                <label for="form-image">Image URL</label>
+                <input id="form-image" name="image_url" type="text" placeholder="https://…" />
+              </div>
+              <div class="form-field">
+                <label for="form-prep">Prep Time (minutes)</label>
+                <input id="form-prep" name="prep_time" type="number" min="1" step="1" required />
+              </div>
+              <div class="form-field">
+                <label for="form-servings">Base servings (recipe makes for X people)</label>
+                <input id="form-servings" name="servings" type="number" min="1" step="1" value="4" required />
+                <span class="helper">Used to scale the grocery list</span>
+              </div>
+              <div class="form-field">
+                <label for="form-difficulty">Difficulty</label>
+                <select id="form-difficulty" name="difficulty" required>
+                  <option value="Easy">Easy</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Hard">Hard</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="form-cost">Cost Estimate</label>
+                <select id="form-cost" name="cost_estimate">
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="form-cuisine">Cuisine</label>
+                <input id="form-cuisine" name="cuisine" type="text" />
+              </div>
+              <div class="form-field">
+                <label for="form-protein">Protein (Grams)</label>
+                <input id="form-protein" name="protein_grams" type="number" min="0" step="1" />
+              </div>
+              <div class="form-field full">
+                <label>Equipment Needed</label>
+                <div class="tag-input-row">
+                  <input type="text" id="equipment-input" placeholder="Type and press Enter (e.g. Pan)" autocomplete="off" />
+                </div>
+                <div id="equipment-chips" class="badges" style="margin-top: 8px"></div>
+              </div>
+              <div class="form-field full">
+                <label>Ingredients</label>
+                <div id="ingredient-rows" class="ingredient-rows"></div>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-add-ingredient" style="margin-top: 8px">
+                  + Add ingredient
+                </button>
+              </div>
+              <div class="form-field full">
+                <label>Instructions</label>
+                <div id="instruction-steps" class="instruction-steps"></div>
+                <button type="button" class="btn-add-instruction-step" id="btn-add-step">＋ Add step</button>
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button type="submit" class="btn btn-primary" id="form-save">Save Recipe</button>
+              <button type="button" class="btn btn-secondary" id="form-cancel">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast-error" class="toast-error" role="alert"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script src="js/config.js"></script>
+    <script src="js/supabaseClient.js"></script>
+    <script src="js/ingredientMerge.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
