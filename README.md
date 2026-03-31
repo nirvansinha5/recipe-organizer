@@ -71,12 +71,3 @@ experience to a deployed, database-backed web application.
 ---
 
 Built by [Nirvan Sinha](https://github.com/nirvansinha5)
-```
-
----
-
-Save that, then run:
-```
-git add .
-git commit -m "Add README"
-git push origin main
