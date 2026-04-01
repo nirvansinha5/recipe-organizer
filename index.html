@@ -11,8 +11,8 @@
     <link rel="stylesheet" href="css/styles.css" />
   </head>
   <body>
-    <!-- Full-screen subtle overlay while Supabase requests run -->
-    <div id="async-loading-overlay" class="loading-overlay" aria-hidden="true">
+    <!-- Full-screen overlay (z-index 600); modal stack: detail 1000–1001, form 1002–1003, confirms 2000–2001 — see css/styles.css -->
+    <div id="async-loading-overlay" class="loading-overlay" aria-hidden="true" style="z-index: 600">
       <div class="loading-bar">
         <span class="spinner" aria-hidden="true"></span>
         <span>Loading…</span>
@@ -51,10 +51,6 @@
             <div class="filter-group">
               <label>Cuisine</label>
               <div class="multi-select filter-chip-multi" id="filter-cuisine"></div>
-            </div>
-            <div class="filter-group">
-              <label>Cost Estimate</label>
-              <div class="multi-select filter-chip-multi" id="filter-cost"></div>
             </div>
             <div class="filter-group">
               <label>Equipment</label>
@@ -176,6 +172,23 @@
       </div>
     </div>
 
+    <div class="modal-backdrop" id="modal-nutrition-fallback" role="dialog" aria-modal="true" aria-labelledby="nutrition-fallback-title">
+      <div class="modal-panel wide nutrition-fallback-panel">
+        <div class="modal-header">
+          <h2 id="nutrition-fallback-title">⚠️ Nutrition data missing</h2>
+          <button type="button" class="modal-close" id="nutrition-fallback-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <p id="nutrition-fallback-subtitle" class="nutrition-fallback-subtitle"></p>
+          <div id="nutrition-fallback-rows" class="nutrition-fallback-rows"></div>
+          <div class="modal-actions nutrition-fallback-actions">
+            <button type="button" class="btn btn-secondary" id="nutrition-fallback-skip">Skip all — save with partial data</button>
+            <button type="button" class="btn btn-primary" id="nutrition-fallback-apply">Apply &amp; Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal-backdrop" id="modal-form-unsaved" role="dialog" aria-modal="true" aria-labelledby="form-unsaved-title">
       <div class="modal-panel form-unsaved-panel">
         <div class="modal-body">
@@ -237,38 +250,8 @@
                 </select>
               </div>
               <div class="form-field">
-                <label for="form-cost">Cost Estimate</label>
-                <select id="form-cost" name="cost_estimate">
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                </select>
-              </div>
-              <div class="form-field">
                 <label for="form-cuisine">Cuisine</label>
                 <input id="form-cuisine" name="cuisine" type="text" />
-              </div>
-              <div class="form-field">
-                <label for="form-protein">Protein (Grams)</label>
-                <input id="form-protein" name="protein_grams" type="number" min="0" step="1" />
-              </div>
-              <div class="form-field full protein-type-field">
-                <label for="protein-type-input">Protein type</label>
-                <div class="tag-input-row protein-type-input-wrap">
-                  <input
-                    type="text"
-                    id="protein-type-input"
-                    placeholder="Click or type to choose…"
-                    autocomplete="off"
-                    aria-haspopup="listbox"
-                    aria-expanded="false"
-                  />
-                  <div id="protein-type-suggestions" class="protein-type-suggestions hidden" role="listbox"></div>
-                </div>
-                <div id="protein-type-chips" class="badges" style="margin-top: 8px"></div>
-                <p id="protein-type-autohint" class="form-hint-muted hidden" aria-live="polite">
-                  Auto-detected from recipe name — adjust if needed
-                </p>
               </div>
               <div class="form-field full">
                 <label>Equipment Needed</label>
@@ -290,8 +273,11 @@
                 <button type="button" class="btn-add-instruction-step" id="btn-add-step">＋ Add step</button>
               </div>
             </div>
-            <div class="modal-actions">
-              <button type="submit" class="btn btn-primary" id="form-save">Save Recipe</button>
+            <div class="modal-actions form-save-actions">
+              <button type="submit" class="btn btn-primary" id="form-save">
+                <span class="form-save-spinner" id="form-save-spinner" aria-hidden="true"></span>
+                <span id="form-save-text">Save Recipe</span>
+              </button>
               <button type="button" class="btn btn-secondary" id="form-cancel">Cancel</button>
             </div>
           </form>
@@ -300,6 +286,7 @@
     </div>
 
     <div id="toast-error" class="toast-error" role="alert"></div>
+    <div id="toast-info" class="toast-info" role="status"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
     <script src="js/config.js"></script>

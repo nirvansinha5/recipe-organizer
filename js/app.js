@@ -17,17 +17,52 @@
   let formIngredientRows = [];
   /** Instruction step texts (display order); serialized with numbered prefixes on save. */
   let formInstructionSteps = [];
-  /** Lowercase protein type slugs (allowed set only). */
-  let formProteinTypes = [];
   /** Snapshot from last openFormModal for dirty detection. */
   let formInitialSnapshot = null;
-  /** Slugs removed from protein types by user; auto-detect skips until recipe name changes. */
-  const proteinTypeUserRemoved = new Set();
-  let lastDebouncedNameForProtein = '';
-  let formNameDebounceTimer = null;
-  let proteinAutoHintTimer = null;
 
   let asyncLoadingDepth = 0;
+
+  /** Recipe ids saved with skipped/missing USDA rows — detail modal shows incomplete warning until full save. */
+  const recipeNutritionIncomplete = new Set();
+
+  /**
+   * USDA FoodData Central key — used only in request URLs; never log this value.
+   * @see https://fdc.nal.usda.gov/api-guide.html
+   */
+  const USDA_API_KEY = 'lX35bgWVepzHAtZ6WfALZ1f4DGasXW8OIZ1i2AdK';
+
+  /** Approximate grams per 1 unit of measure for scaling nutrients (per 100g in FDC). */
+  const UNIT_TO_GRAMS = {
+    tsp: 5,
+    tbsp: 15,
+    'fl oz': 30,
+    cup: 240,
+    pint: 473,
+    quart: 946,
+    gallon: 3785,
+    ml: 1,
+    l: 1000,
+    oz: 28,
+    lb: 454,
+    g: 1,
+    kg: 1000,
+    whole: 50,
+    piece: 50,
+    clove: 50,
+    slice: 50,
+    each: 50,
+    sprig: 30,
+    bunch: 30,
+    handful: 30,
+    stalk: 30,
+    head: 30,
+    sheet: 200,
+    can: 200,
+    package: 200,
+    pinch: 1,
+    dash: 1,
+    drop: 1,
+  };
 
   /** Grouped unit options for ingredient rows (matches spec). */
   const INGREDIENT_UNIT_GROUPS = [
@@ -238,11 +273,8 @@
       prep_time: $('#form-prep').value.trim(),
       servings: $('#form-servings').value.trim(),
       difficulty: $('#form-difficulty').value,
-      cost_estimate: $('#form-cost').value,
       cuisine: $('#form-cuisine').value.trim(),
-      protein_grams: $('#form-protein').value.trim(),
       equipment: [...formEquipment].map((e) => String(e).trim().toLowerCase()).filter(Boolean).sort(),
-      protein_type: [...formProteinTypes].map((p) => String(p).trim().toLowerCase()).filter(Boolean).sort(),
       ingredients: formIngredientRows.map((r) => ({
         name: String(r.name || '').trim().toLowerCase(),
         quantity: String(r.quantity || '').trim(),
@@ -270,109 +302,429 @@
     }
   }
 
-  function hideProteinTypeSuggestions() {
-    const box = $('#protein-type-suggestions');
-    const inp = $('#protein-type-input');
-    if (box) {
-      box.classList.add('hidden');
-      box.innerHTML = '';
+  function nutritionCacheKey(ingredientNameLower) {
+    return `nutrition_cache_${String(ingredientNameLower || '').trim().toLowerCase()}`;
+  }
+
+  function readNutritionCache(nameLower) {
+    try {
+      const raw = localStorage.getItem(nutritionCacheKey(nameLower));
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      if (!o || typeof o !== 'object') return null;
+      return o;
+    } catch {
+      return null;
     }
-    if (inp) inp.setAttribute('aria-expanded', 'false');
   }
 
-  function showProteinAutoHint() {
-    const el = $('#protein-type-autohint');
-    if (!el) return;
-    el.classList.remove('hidden');
-    clearTimeout(proteinAutoHintTimer);
-    proteinAutoHintTimer = setTimeout(() => {
-      el.classList.add('hidden');
-    }, 3000);
+  function writeNutritionCache(nameLower, payload) {
+    try {
+      localStorage.setItem(nutritionCacheKey(nameLower), JSON.stringify(payload));
+    } catch {
+      /* ignore quota */
+    }
   }
 
-  function scheduleProteinDetectFromName() {
-    clearTimeout(formNameDebounceTimer);
-    formNameDebounceTimer = setTimeout(() => {
-      const name = $('#form-name').value;
-      const nameLower = name.toLowerCase();
-      if (nameLower !== lastDebouncedNameForProtein) {
-        proteinTypeUserRemoved.clear();
-        lastDebouncedNameForProtein = nameLower;
+  /** Stop words removed before USDA ingredient↔description confidence scoring. */
+  const USDA_CONFIDENCE_STOP_WORDS = new Set([
+    'and',
+    'the',
+    'or',
+    'with',
+    'for',
+    'from',
+    'in',
+    'of',
+    'a',
+    'an',
+    'raw',
+    'fresh',
+    'dried',
+    'cooked',
+    'whole',
+    'ground',
+    'organic',
+    'salad',
+    'cooking',
+    'style',
+    'type',
+    'grade',
+    'brand',
+    'no',
+    'added',
+    'extra',
+    'virgin',
+    'light',
+    'heavy',
+    'plain',
+    'natural',
+  ]);
+
+  function usdaConfidenceTokenize(text) {
+    const s = String(text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    return s ? s.split(/\s+/).filter(Boolean) : [];
+  }
+
+  function usdaConfidenceMeaningfulWords(tokens) {
+    return tokens.filter((w) => w.length > 3 && !USDA_CONFIDENCE_STOP_WORDS.has(w));
+  }
+
+  function usdaQueryWordMatchesResultWord(qw, rw) {
+    return rw.includes(qw) || qw.includes(rw);
+  }
+
+  /**
+   * Overlap + length-penalty confidence (0–1) between ingredient name and USDA result description.
+   * Empty query words after filtering → neutral overlap 0.3.
+   */
+  function usdaComputeConfidence(ingredientName, resultDescription) {
+    const queryWords = usdaConfidenceMeaningfulWords(usdaConfidenceTokenize(ingredientName));
+    const resultWords = usdaConfidenceMeaningfulWords(usdaConfidenceTokenize(resultDescription));
+
+    let overlapScore;
+    if (queryWords.length === 0) overlapScore = 0.3;
+    else {
+      const matchCount = queryWords.filter((qw) =>
+        resultWords.some((rw) => rw.includes(qw))
+      ).length;
+      overlapScore = matchCount / queryWords.length;
+    }
+
+    const extraWords = resultWords.filter(
+      (rw) => !queryWords.some((qw) => usdaQueryWordMatchesResultWord(qw, rw))
+    );
+    const lengthPenalty = Math.min(extraWords.length * 0.1, 0.3);
+
+    let confidence = overlapScore - lengthPenalty;
+    if (confidence < 0) confidence = 0;
+    if (confidence > 1) confidence = 1;
+    return confidence;
+  }
+
+  /** Grams for ingredient row; null if unmeasurable (skip USDA). */
+  function ingredientQuantityToGrams(quantityStr, unitRaw) {
+    const u = String(unitRaw || '').trim().toLowerCase();
+    if (u === 'to taste' || u === 'as needed') return null;
+    const mult = UNIT_TO_GRAMS[u];
+    if (mult == null) return null;
+    const q = parseFloat(String(quantityStr || '').replace(',', '.'));
+    if (!Number.isFinite(q) || q <= 0) return null;
+    return q * mult;
+  }
+
+  /**
+   * Parse FDC food payload: nutrients per 100 g. IDs: 1008 kcal, 1003 protein, 1005 carbs, 1004 fat.
+   * Handles search vs detail shapes (nutrientId vs nested nutrient.id, value vs amount).
+   */
+  function extractNutrientsPer100g(food) {
+    const out = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+    const list = food && Array.isArray(food.foodNutrients) ? food.foodNutrients : [];
+    for (const n of list) {
+      const nid =
+        n.nutrientId != null
+          ? n.nutrientId
+          : n.nutrient && n.nutrient.id != null
+            ? n.nutrient.id
+            : n.nutrient && n.nutrient.nutrientId != null
+              ? n.nutrient.nutrientId
+              : null;
+      if (nid == null) continue;
+      let val = n.value;
+      if (val == null && n.amount != null) val = n.amount;
+      val = Number(val);
+      if (!Number.isFinite(val)) continue;
+      if (nid === 1008) out.kcal = val;
+      else if (nid === 1003) out.protein = val;
+      else if (nid === 1005) out.carbs = val;
+      else if (nid === 1004) out.fat = val;
+    }
+    return out;
+  }
+
+  /** Per 100g: miss if sum of kcal + protein + carbs + fat is below threshold (irrelevant/zero matches). */
+  function nutrientsPer100gAreMissing(per100) {
+    const sum = (per100.kcal || 0) + (per100.protein || 0) + (per100.carbs || 0) + (per100.fat || 0);
+    return !Number.isFinite(sum) || sum < 1.0;
+  }
+
+  /**
+   * USDA search: confidence score vs first hit (then top 3 if medium), then nutrient gate (1008/1003/1005/1004 sum ≥ 1 per 100g).
+   * Low confidence on first result skips alternate hits; medium rescans foods[0..2] for any high-confidence match.
+   */
+  async function usdaSearchFirstFood(queryString, ingredientName) {
+    try {
+      const url = new URL('https://api.nal.usda.gov/fdc/v1/foods/search');
+      url.searchParams.set('query', queryString);
+      url.searchParams.set('api_key', USDA_API_KEY);
+      url.searchParams.append('dataType', 'Foundation');
+      url.searchParams.append('dataType', 'SR Legacy');
+      url.searchParams.set('pageSize', '3');
+      const res = await fetch(url.toString());
+      if (!res.ok) return null;
+      const data = await res.json();
+      const foods = data && data.foods;
+      if (!foods || foods.length === 0) return null;
+
+      console.log('Top 3 USDA results for:', ingredientName);
+      foods.slice(0, 3).forEach((f, i) => {
+        console.log(`  [${i}]`, f.description);
+      });
+
+      const getDesc = (food) => String(food.description || food.lowercaseDescription || '');
+
+      const c0 = usdaComputeConfidence(ingredientName, getDesc(foods[0]));
+      console.log(
+        'Confidence for:',
+        ingredientName,
+        '→',
+        c0.toFixed(2),
+        '→',
+        c0 >= 0.5 ? 'ACCEPT' : c0 >= 0.2 ? 'CHECK MORE' : 'MISS'
+      );
+
+      let chosen = null;
+      if (c0 < 0.2) {
+        return null;
       }
-      const detected = detectProteinTypesFromName(nameLower);
-      let added = false;
-      for (const t of detected) {
-        if (proteinTypeUserRemoved.has(t)) continue;
-        if (!formProteinTypes.includes(t)) {
-          formProteinTypes.push(t);
-          added = true;
+      if (c0 >= 0.5) {
+        chosen = foods[0];
+      } else {
+        for (let i = 0; i < Math.min(3, foods.length); i++) {
+          const ci = i === 0 ? c0 : usdaComputeConfidence(ingredientName, getDesc(foods[i]));
+          if (i > 0) {
+            console.log(
+              'Confidence for:',
+              ingredientName,
+              '→',
+              ci.toFixed(2),
+              '→',
+              ci >= 0.5 ? 'ACCEPT' : ci >= 0.2 ? 'CHECK MORE' : 'MISS'
+            );
+          }
+          if (ci >= 0.5) {
+            chosen = foods[i];
+            break;
+          }
         }
+        if (!chosen) return null;
       }
-      if (added) {
-        formProteinTypes = normalizeProteinTypeArray(formProteinTypes);
-        renderProteinTypeChips();
-        updateProteinTypeSuggestions();
-        showProteinAutoHint();
-      }
-    }, 600);
-  }
 
-  function renderProteinTypeChips() {
-    const wrap = $('#protein-type-chips');
-    if (!wrap) return;
-    wrap.innerHTML = '';
-    formProteinTypes.forEach((slug, idx) => {
-      const span = document.createElement('span');
-      span.className = 'badge badge-accent';
-      span.style.cursor = 'pointer';
-      span.title = 'Click to remove';
-      span.textContent = `${formatDisplayProteinType(slug)} ×`;
-      span.addEventListener('click', () => {
-        proteinTypeUserRemoved.add(slug);
-        formProteinTypes.splice(idx, 1);
-        renderProteinTypeChips();
-        updateProteinTypeSuggestions();
-      });
-      wrap.appendChild(span);
-    });
-  }
-
-  function updateProteinTypeSuggestions() {
-    const box = $('#protein-type-suggestions');
-    const inp = $('#protein-type-input');
-    if (!box || !inp) return;
-    const q = inp.value.trim().toLowerCase();
-    const avail = PROTEIN_TYPE_ORDER.filter((slug) => {
-      if (formProteinTypes.includes(slug)) return false;
-      if (!q) return true;
-      const label = formatDisplayProteinType(slug).toLowerCase();
-      return label.includes(q) || slug.includes(q);
-    });
-    box.innerHTML = '';
-    avail.forEach((slug) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'protein-type-suggestion';
-      btn.setAttribute('role', 'option');
-      btn.textContent = formatDisplayProteinType(slug);
-      btn.addEventListener('mousedown', (e) => e.preventDefault());
-      btn.addEventListener('click', () => {
-        formProteinTypes = normalizeProteinTypeArray([...formProteinTypes, slug]);
-        inp.value = '';
-        renderProteinTypeChips();
-        updateProteinTypeSuggestions();
-        hideProteinTypeSuggestions();
-        inp.focus();
-      });
-      box.appendChild(btn);
-    });
-    if (!avail.length) {
-      box.classList.add('hidden');
-      inp.setAttribute('aria-expanded', 'false');
-      return;
+      if (!Array.isArray(chosen.foodNutrients) || chosen.foodNutrients.length === 0) return null;
+      const per100 = extractNutrientsPer100g(chosen);
+      if (nutrientsPer100gAreMissing(per100)) return null;
+      return chosen;
+    } catch {
+      return null;
     }
-    box.classList.remove('hidden');
-    inp.setAttribute('aria-expanded', 'true');
+  }
+
+  /**
+   * Parallel USDA lookups for ingredient rows. Rows with skip units are omitted from API calls.
+   * Returns summed macros and list of rows that need manual entry.
+   */
+  async function computeUsdaTotalsForIngredients(rows) {
+    const results = await Promise.all(
+      rows.map(async (row) => {
+        const name = String(row.name || '').trim();
+        const unit = String(row.unit || '').trim();
+        const qtyStr = qtyDisabledForUnit(unit) ? '' : String(row.quantity || '').trim();
+        if (!name) return { type: 'skip' };
+        if (qtyDisabledForUnit(unit)) return { type: 'skip' };
+        const grams = ingredientQuantityToGrams(qtyStr, unit);
+        const failRow = {
+          name,
+          nameLower: name.toLowerCase(),
+          quantity: qtyStr,
+          unit,
+          displayLine: `${name} — ${qtyStr || '?'} ${unit} used`,
+        };
+        if (grams == null) return { type: 'fail', failRow };
+        const q = `${qtyStr} ${unit} ${name}`.trim();
+        try {
+          const food = await usdaSearchFirstFood(q, name);
+          if (!food) return { type: 'fail', failRow };
+          const per100 = extractNutrientsPer100g(food);
+          if (nutrientsPer100gAreMissing(per100)) return { type: 'fail', failRow };
+          const scale = grams / 100;
+          return {
+            type: 'ok',
+            kcal: per100.kcal * scale,
+            protein: per100.protein * scale,
+            carbs: per100.carbs * scale,
+            fat: per100.fat * scale,
+          };
+        } catch {
+          return { type: 'fail', failRow };
+        }
+      })
+    );
+
+    let kcal = 0;
+    let protein = 0;
+    let carbs = 0;
+    let fat = 0;
+    const failed = [];
+    for (const r of results) {
+      if (!r || r.type === 'skip') continue;
+      if (r.type === 'fail') {
+        failed.push(r.failRow);
+        continue;
+      }
+      kcal += r.kcal;
+      protein += r.protein;
+      carbs += r.carbs;
+      fat += r.fat;
+    }
+    return { kcal, protein, carbs, fat, failed };
+  }
+
+  /**
+   * Block save until user skips or enters manual macros for failed rows.
+   * Resolves { skipAll }, { manual: [...] }, or { cancelled: true }.
+   */
+  function showNutritionFallbackModal(failedRows) {
+    return new Promise((resolve) => {
+      const modal = $('#modal-nutrition-fallback');
+      const sub = $('#nutrition-fallback-subtitle');
+      const wrap = $('#nutrition-fallback-rows');
+      const skipBtn = $('#nutrition-fallback-skip');
+      const applyBtn = $('#nutrition-fallback-apply');
+      const closeBtn = $('#nutrition-fallback-close');
+      if (!modal || !sub || !wrap || !skipBtn || !applyBtn) {
+        resolve({ cancelled: true });
+        return;
+      }
+
+      const n = failedRows.length;
+      sub.textContent = `We couldn't find data for ${n} ingredient${n === 1 ? '' : 's'}. Enter nutrition manually to continue, or skip.`;
+      wrap.innerHTML = '';
+
+      failedRows.forEach((fr, idx) => {
+        const cache = readNutritionCache(fr.nameLower) || {};
+        const rowEl = document.createElement('div');
+        rowEl.className = 'nutrition-fallback-row';
+        rowEl.dataset.idx = String(idx);
+        rowEl.innerHTML = `
+          <p class="nutrition-fallback-context">${escapeHtml(fr.displayLine)}</p>
+          <div class="nutrition-fallback-macros">
+            <label>Calories<input type="number" class="nf-cal" min="0" step="any" placeholder="0" value="${cache.calories != null ? escapeAttr(String(cache.calories)) : ''}" /></label>
+            <label>Protein g<input type="number" class="nf-prot" min="0" step="any" placeholder="0" value="${cache.protein != null ? escapeAttr(String(cache.protein)) : ''}" /></label>
+            <label>Carbs g<input type="number" class="nf-carb" min="0" step="any" placeholder="0" value="${cache.carbs != null ? escapeAttr(String(cache.carbs)) : ''}" /></label>
+            <label>Fat g<input type="number" class="nf-fat" min="0" step="any" placeholder="0" value="${cache.fat != null ? escapeAttr(String(cache.fat)) : ''}" /></label>
+          </div>
+          <div class="nutrition-fallback-serving">Per
+            <input type="number" class="nf-serving-qty" min="0" step="any" placeholder="1" value="${cache.serving_qty != null ? escapeAttr(String(cache.serving_qty)) : ''}" />
+            <span class="nf-serving-unit">${escapeHtml(fr.unit)}</span>
+          </div>`;
+        wrap.appendChild(rowEl);
+      });
+
+      function cleanup() {
+        modal.classList.remove('is-open');
+        skipBtn.onclick = null;
+        applyBtn.onclick = null;
+        closeBtn.onclick = null;
+        modal.onclick = null;
+      }
+
+      function finish(result) {
+        cleanup();
+        resolve(result);
+      }
+
+      skipBtn.onclick = () => finish({ skipAll: true });
+
+      applyBtn.onclick = () => {
+        const manual = [];
+        const resolvedNames = new Set();
+        wrap.querySelectorAll('.nutrition-fallback-row').forEach((rowEl, i) => {
+          const fr = failedRows[i];
+          if (!fr) return;
+          const cal = parseFloat(rowEl.querySelector('.nf-cal') && rowEl.querySelector('.nf-cal').value);
+          const prot = parseFloat(rowEl.querySelector('.nf-prot') && rowEl.querySelector('.nf-prot').value);
+          const carb = parseFloat(rowEl.querySelector('.nf-carb') && rowEl.querySelector('.nf-carb').value);
+          const ft = parseFloat(rowEl.querySelector('.nf-fat') && rowEl.querySelector('.nf-fat').value);
+          const servQ = parseFloat(rowEl.querySelector('.nf-serving-qty') && rowEl.querySelector('.nf-serving-qty').value);
+          const hasMacro = [cal, prot, carb, ft].some((x) => Number.isFinite(x));
+          if (!Number.isFinite(servQ) || servQ <= 0 || !hasMacro) return;
+          const recipeQty = parseFloat(String(fr.quantity || '').replace(',', '.'));
+          if (!Number.isFinite(recipeQty) || recipeQty <= 0) return;
+          const scale = recipeQty / servQ;
+          const cachePayload = {
+            calories: Number.isFinite(cal) ? cal : 0,
+            protein: Number.isFinite(prot) ? prot : 0,
+            carbs: Number.isFinite(carb) ? carb : 0,
+            fat: Number.isFinite(ft) ? ft : 0,
+            serving_qty: servQ,
+            serving_unit: fr.unit,
+          };
+          writeNutritionCache(fr.nameLower, cachePayload);
+          resolvedNames.add(fr.nameLower);
+          manual.push({
+            kcal: cachePayload.calories * scale,
+            protein: cachePayload.protein * scale,
+            carbs: cachePayload.carbs * scale,
+            fat: cachePayload.fat * scale,
+          });
+        });
+        finish({ manual, resolvedNames });
+      };
+
+      if (closeBtn) closeBtn.onclick = () => finish({ cancelled: true });
+      modal.onclick = (e) => {
+        if (e.target === modal) finish({ cancelled: true });
+      };
+
+      modal.classList.add('is-open');
+    });
+  }
+
+  /** Scan combined instruction text; merge-detected equipment (lowercase slugs). */
+  function detectEquipmentFromInstructions(text) {
+    const t = String(text || '');
+    const found = new Set();
+    const rules = [
+      [/\b(fry|sauté|sear|pan|skillet|brown|crisp)\b/i, 'pan'],
+      [/\bstir-fry\b|\bstir fry\b/i, 'pan'],
+      [/\b(boil|simmer|blanch|pot|stock|braise|poach)\b/i, 'pot'],
+      [/\b(roast|broil|bake|baking|preheat|oven|casserole|toast)\b/i, 'oven'],
+      [/\bsheet pan\b|\bbaking sheet\b|\blined tray\b/i, 'oven'],
+      [/\b(grill|grilled|grilling|char|barbecue|bbq)\b/i, 'grill'],
+      [/\b(blend|blender|purée|puree|pulse|food processor)\b/i, 'blender'],
+      [/\binstant pot\b|\bpressure cook\b|\bpressure cooker\b/i, 'instant pot'],
+      [/\bair fry\b|\bair fryer\b/i, 'air fryer'],
+      [/\b(steam|steamed|steamer)\b/i, 'steamer'],
+      [/\bwhisk\b|\bmix together\b|\bcombine in a bowl\b/i, 'mixing bowl'],
+      [/\brice cooker\b/i, 'rice cooker'],
+    ];
+    for (const [re, eq] of rules) {
+      if (re.test(t)) {
+        found.add(eq);
+        if (eq === 'grill') found.add('oven');
+      }
+    }
+    return Array.from(found);
+  }
+
+  function showInfoToast(message) {
+    const el = $('#toast-info');
+    if (!el) return;
+    el.textContent = message || '';
+    el.classList.add('is-visible');
+    clearTimeout(showInfoToast._t);
+    showInfoToast._t = setTimeout(() => el.classList.remove('is-visible'), 5000);
+  }
+
+  /** Save button spinner + label only (never tied to global overlay). */
+  function setSaveButtonCalculating(on, message) {
+    const sp = $('#form-save-spinner');
+    const tx = $('#form-save-text');
+    if (sp) sp.classList.toggle('hidden', !on);
+    if (tx) tx.textContent = on ? message || 'Calculating nutrition…' : 'Save Recipe';
   }
 
   function setLibraryLoading(on) {
@@ -417,9 +769,7 @@
 
   async function loadWeeklySelection() {
     if (!supabase) return;
-    pushAsyncLoading();
     const { data, error } = await supabase.from('weekly_selection').select('id, recipe_id, added_at, target_servings');
-    popAsyncLoading();
     if (error) {
       console.error(error);
       showError(error.message || 'Could not load weekly selection.');
@@ -447,7 +797,6 @@
     const diffSet = new Set(recipes.map((r) => r.difficulty).filter(Boolean));
     const difficulties = diffOrder.filter((d) => diffSet.has(d));
     const cuisines = uniqueSorted(recipes.map((r) => r.cuisine));
-    const costs = uniqueSorted(recipes.map((r) => r.cost_estimate));
     const equipSet = new Set();
     recipes.forEach((r) => (r.equipment || []).forEach((e) => equipSet.add(e)));
     const equipment = Array.from(equipSet).sort((a, b) => a.localeCompare(b));
@@ -457,7 +806,6 @@
 
     renderChipGroup('#filter-difficulty', 'diff', difficulties);
     renderChipGroup('#filter-cuisine', 'cuisine', cuisines, formatDisplayCuisine);
-    renderChipGroup('#filter-cost', 'cost', costs);
     renderChipGroup('#filter-equipment', 'eq', equipment, formatDisplayEquipment);
     renderChipGroup('#filter-protein-type', 'ptype', proteinTypes, formatDisplayProteinType);
   }
@@ -495,7 +843,6 @@
   function applyFiltersAndRender() {
     const diff = getCheckedValues('#filter-difficulty');
     const cuisine = getCheckedValues('#filter-cuisine');
-    const cost = getCheckedValues('#filter-cost');
     const equip = getCheckedValues('#filter-equipment');
     const proteinType = getCheckedValues('#filter-protein-type');
     const sortVal = $('#sort-select') ? $('#sort-select').value : 'prep_asc';
@@ -512,7 +859,6 @@
     if (q) list = list.filter((r) => (r.name || '').toLowerCase().includes(q));
     if (diff.length) list = list.filter((r) => diff.includes(r.difficulty));
     if (cuisine.length) list = list.filter((r) => cuisine.includes(r.cuisine));
-    if (cost.length) list = list.filter((r) => cost.includes(r.cost_estimate));
     if (equip.length) {
       list = list.filter((r) => {
         const set = new Set(r.equipment || []);
@@ -529,13 +875,13 @@
     list = list.filter((r) => {
       const pt = r.prep_time != null ? r.prep_time : 0;
       if (pt > maxPrep) return false;
-      const pg = r.protein_grams != null ? r.protein_grams : 0;
+      const pg = r.protein_grams != null ? Number(r.protein_grams) : 0;
       if (pg < minProtein) return false;
       return true;
     });
 
     const prepKey = (r) => (r.prep_time == null ? 99999 : r.prep_time);
-    const proteinKey = (r) => (r.protein_grams == null ? -1 : r.protein_grams);
+    const proteinKey = (r) => (r.protein_grams == null ? -1 : Number(r.protein_grams));
 
     switch (sortVal) {
       case 'prep_asc':
@@ -602,38 +948,75 @@
 
     const meta = document.createElement('div');
     meta.className = 'recipe-card-meta';
-    const prepLine = document.createElement('div');
-    prepLine.className = 'recipe-prep-line';
-    prepLine.innerHTML =
-      '<span class="recipe-prep-icon" aria-hidden="true">⏱</span> ' +
-      (recipe.prep_time != null ? `${recipe.prep_time} min` : 'Prep time —');
-    meta.appendChild(prepLine);
-    if (recipe.protein_grams != null) {
-      const pl = document.createElement('div');
-      pl.className = 'recipe-protein-line';
-      const ic = document.createElement('span');
-      ic.className = 'protein-icon';
-      ic.setAttribute('aria-hidden', 'true');
-      ic.textContent = '⚡';
-      pl.appendChild(ic);
-      pl.appendChild(document.createTextNode(` ${recipe.protein_grams}g protein`));
-      meta.appendChild(pl);
-    }
 
-    const badges = document.createElement('div');
-    badges.className = 'badges';
-    if (recipe.difficulty) {
-      const b = document.createElement('span');
-      b.className = difficultyBadgeClass(recipe.difficulty);
-      b.textContent = recipe.difficulty;
-      badges.appendChild(b);
+    const statsRow = document.createElement('div');
+    statsRow.className = 'recipe-card-stats-row';
+
+    const statKcal = document.createElement('div');
+    statKcal.className = 'recipe-card-stat recipe-card-stat--kcal';
+    statKcal.appendChild(document.createTextNode('🔥 '));
+    if (recipe.calories != null && Number.isFinite(Number(recipe.calories))) {
+      const ck = Math.round(Number(recipe.calories) * 10) / 10;
+      statKcal.appendChild(document.createTextNode(`${ck} kcal`));
+    } else {
+      const dash = document.createElement('span');
+      dash.className = 'recipe-meta-dash';
+      dash.textContent = '—';
+      statKcal.appendChild(dash);
+    }
+    statsRow.appendChild(statKcal);
+
+    const statProt = document.createElement('div');
+    statProt.className = 'recipe-card-stat recipe-card-stat--prot';
+    statProt.appendChild(document.createTextNode('💪 '));
+    if (recipe.protein_grams != null && Number.isFinite(Number(recipe.protein_grams))) {
+      const pg = Number(recipe.protein_grams);
+      statProt.appendChild(document.createTextNode(`${pg % 1 === 0 ? pg : pg.toFixed(1)}g`));
+    } else {
+      const dash = document.createElement('span');
+      dash.className = 'recipe-meta-dash';
+      dash.textContent = '—';
+      statProt.appendChild(dash);
+    }
+    statsRow.appendChild(statProt);
+
+    const statPrep = document.createElement('div');
+    statPrep.className = 'recipe-card-stat recipe-card-stat--prep';
+    statPrep.appendChild(document.createTextNode('⏱ '));
+    if (recipe.prep_time != null) {
+      statPrep.appendChild(document.createTextNode(`${recipe.prep_time} min`));
+    } else {
+      const dashP = document.createElement('span');
+      dashP.className = 'recipe-meta-dash';
+      dashP.textContent = '—';
+      statPrep.appendChild(dashP);
+    }
+    statsRow.appendChild(statPrep);
+
+    meta.appendChild(statsRow);
+
+    const badgeRow = document.createElement('div');
+    badgeRow.className = 'recipe-card-badge-row';
+    const ptList = normalizeProteinTypeArray(recipe.protein_type || []);
+    if (ptList.length) {
+      const pb = document.createElement('span');
+      pb.className = 'badge badge-card-protein-type';
+      pb.textContent = formatDisplayProteinType(ptList[0]);
+      badgeRow.appendChild(pb);
     }
     if (recipe.cuisine) {
       const b = document.createElement('span');
       b.className = 'badge badge-cuisine-outline';
       b.textContent = formatDisplayCuisine(recipe.cuisine);
-      badges.appendChild(b);
+      badgeRow.appendChild(b);
     }
+    if (recipe.difficulty) {
+      const b = document.createElement('span');
+      b.className = difficultyBadgeClass(recipe.difficulty);
+      b.textContent = recipe.difficulty;
+      badgeRow.appendChild(b);
+    }
+    meta.appendChild(badgeRow);
 
     const actions = document.createElement('div');
     actions.className = 'recipe-card-actions';
@@ -657,7 +1040,6 @@
     actions.appendChild(addBtn);
     body.appendChild(title);
     body.appendChild(meta);
-    body.appendChild(badges);
     body.appendChild(actions);
 
     card.appendChild(imgWrap);
@@ -814,6 +1196,47 @@
     return ing.name;
   }
 
+  function buildDetailNutritionSection(recipe) {
+    const servRaw = recipe.servings != null ? Number(recipe.servings) : NaN;
+    const servSuffix =
+      Number.isFinite(servRaw) && servRaw > 0
+        ? `(recipe makes ${servRaw} servings)`
+        : '(total recipe)';
+    const heading = `<h3 class="detail-nutrition-title"><span class="detail-nutrition-title-main">Nutrition per serving</span><span class="detail-nutrition-title-sub"> ${escapeHtml(servSuffix)}</span></h3>`;
+
+    const c = recipe.calories;
+    const p = recipe.protein_grams;
+    const cb = recipe.carbs;
+    const f = recipe.fat;
+    if (c == null && p == null && cb == null && f == null) {
+      return `${heading}<p class="detail-nutrition-empty">Edit and save this recipe to generate nutrition data.</p>`;
+    }
+    const usePerServing = Number.isFinite(servRaw) && servRaw > 0;
+    const div = usePerServing ? servRaw : 1;
+
+    function row(label, totalVal, dailyRef, caloriesRow) {
+      const t = totalVal != null && Number.isFinite(Number(totalVal)) ? Number(totalVal) : null;
+      const v = t != null ? t / div : null;
+      const pct = v != null ? Math.min(100, (v / dailyRef) * 100) : 0;
+      let right = '—';
+      if (v != null) {
+        const rounded = Math.round(v * 10) / 10;
+        right = caloriesRow ? `${rounded} kcal` : `${rounded}g`;
+      }
+      return `<div class="detail-nutrition-bar-row">
+        <span class="detail-nutrition-bar-label">${escapeHtml(label)}</span>
+        <div class="detail-nutrition-bar-track"><div class="detail-nutrition-bar-fill" style="width:${pct}%"></div></div>
+        <span class="detail-nutrition-bar-value">${escapeHtml(right)}</span>
+      </div>`;
+    }
+    return `${heading}<div class="detail-nutrition-bars">
+      ${row('Calories', c, 2500, true)}
+      ${row('Protein', p, 145, false)}
+      ${row('Carbs', cb, 300, false)}
+      ${row('Fat', f, 80, false)}
+    </div>`;
+  }
+
   function openDetailModal(recipe) {
     const backdrop = $('#modal-detail');
     if (!backdrop) return;
@@ -839,38 +1262,46 @@
       .map((line) => `<li>${escapeHtml(formatIngredientDisplayLine(line))}</li>`)
       .join('');
 
-    const serv = recipe.servings != null ? recipe.servings : 4;
-    const prepLine =
-      recipe.prep_time != null ? `<div class="detail-prep-line"><span aria-hidden="true">⏱</span> ${recipe.prep_time} min</div>` : '';
-    const proteinLine =
-      recipe.protein_grams != null
-        ? `<div class="detail-protein-line"><span aria-hidden="true">⚡</span> ${recipe.protein_grams}g protein</div>`
+    const line1Parts = [];
+    if (recipe.prep_time != null) {
+      line1Parts.push(
+        `<span class="detail-meta-prep" aria-hidden="true">⏱ ${recipe.prep_time} min</span>`
+      );
+    }
+    if (recipe.difficulty) {
+      line1Parts.push(
+        `<span class="${difficultyBadgeClass(recipe.difficulty)}">${escapeHtml(recipe.difficulty)}</span>`
+      );
+    }
+    if (recipe.cuisine) {
+      line1Parts.push(
+        `<span class="badge badge-cuisine-outline">${escapeHtml(formatDisplayCuisine(recipe.cuisine))}</span>`
+      );
+    }
+    const metaLine1 =
+      line1Parts.length > 0
+        ? `<div class="detail-meta-line1">${line1Parts.join('<span class="detail-meta-sep"> · </span>')}</div>`
         : '';
-    const metaBits = [
-      recipe.difficulty ? escapeHtml(recipe.difficulty) : '',
-      recipe.cost_estimate ? escapeHtml(recipe.cost_estimate) : '',
-      recipe.cuisine ? escapeHtml(formatDisplayCuisine(recipe.cuisine)) : '',
-      `${escapeHtml(String(serv))} servings (base)`,
-    ]
-      .filter(Boolean)
-      .join(' · ');
 
     const ptList = normalizeProteinTypeArray(recipe.protein_type || []);
     const proteinTypeBlock =
       ptList.length > 0
-        ? `<div class="detail-protein-types-block">
-        <span class="detail-protein-types-label">Protein type</span>
-        <div class="badges">${ptList.map((p) => `<span class="badge badge-diff-easy">${escapeHtml(formatDisplayProteinType(p))}</span>`).join(' ')}</div>
-      </div>`
+        ? `<div class="detail-meta-line2"><div class="badges">${ptList.map((p) => `<span class="badge badge-diff-easy">${escapeHtml(formatDisplayProteinType(p))}</span>`).join(' ')}</div></div>`
         : '';
 
+    const incompleteWarn = recipeNutritionIncomplete.has(recipe.id)
+      ? `<p class="detail-nutrition-incomplete">⚠️ Nutrition estimate incomplete — some ingredients could not be found</p>`
+      : '';
+
     body.innerHTML = `
+      ${incompleteWarn}
       ${heroHtml}
       <div class="detail-meta-block">
-        ${prepLine}
-        ${metaBits ? `<p class="detail-meta-secondary">${metaBits}</p>` : ''}
-        ${proteinLine}
+        ${metaLine1}
         ${proteinTypeBlock}
+      </div>
+      <div class="detail-section detail-section-nutrition">
+        ${buildDetailNutritionSection(recipe)}
       </div>
       <div class="detail-section">
         <h3>Equipment</h3>
@@ -1043,6 +1474,10 @@
   function openFormModal(recipe) {
     const backdrop = $('#modal-form');
     if (!backdrop) return;
+    const saveBtnOpen = $('#form-save');
+    if (saveBtnOpen) saveBtnOpen.disabled = false;
+    setSaveButtonCalculating(false);
+
     const isEdit = Boolean(recipe && recipe.id);
     $('#form-title').textContent = isEdit ? 'Edit Recipe' : 'Add Recipe';
     $('#form-recipe-id').value = isEdit ? recipe.id : '';
@@ -1051,20 +1486,10 @@
     $('#form-prep').value = isEdit && recipe.prep_time != null ? recipe.prep_time : '';
     $('#form-servings').value = isEdit && recipe.servings != null ? recipe.servings : 4;
     $('#form-difficulty').value = isEdit ? recipe.difficulty || 'Easy' : 'Easy';
-    $('#form-cost').value = isEdit ? recipe.cost_estimate || 'Low' : 'Low';
     $('#form-cuisine').value = isEdit ? formatDisplayCuisine(recipe.cuisine) : '';
-    $('#form-protein').value = isEdit && recipe.protein_grams != null ? recipe.protein_grams : '';
 
     formInstructionSteps = parseInstructionsFromDb(isEdit ? recipe.instructions : '');
     if (!formInstructionSteps.length) formInstructionSteps = [''];
-
-    formProteinTypes = isEdit ? normalizeProteinTypeArray(recipe.protein_type) : [];
-    proteinTypeUserRemoved.clear();
-    clearTimeout(proteinAutoHintTimer);
-    const pHint = $('#protein-type-autohint');
-    if (pHint) pHint.classList.add('hidden');
-    const ptInpOpen = $('#protein-type-input');
-    if (ptInpOpen) ptInpOpen.value = '';
 
     const summary = $('#form-error-summary');
     if (summary) {
@@ -1100,9 +1525,6 @@
     renderEquipmentChips();
     renderIngredientRows();
     renderInstructionSteps();
-    renderProteinTypeChips();
-    hideProteinTypeSuggestions();
-    lastDebouncedNameForProtein = $('#form-name').value.trim().toLowerCase();
 
     formInitialSnapshot = getFormState();
     backdrop.classList.add('is-open');
@@ -1235,6 +1657,9 @@
     const errs = validateRecipeForm();
     if (errs.length) return;
 
+    if (saveBtn) saveBtn.disabled = true;
+    setSaveButtonCalculating(true, 'Calculating nutrition…');
+
     const id = $('#form-recipe-id').value.trim();
     const ingredientsJson = formIngredientRows
       .filter((r) => r.name && String(r.name).trim())
@@ -1245,36 +1670,119 @@
         return JSON.stringify({ name: nm, quantity: qty, unit });
       });
 
-    const equipLower = [...new Set(formEquipment.map((e) => String(e).trim().toLowerCase()).filter(Boolean))].sort((a, b) =>
-      a.localeCompare(b)
-    );
+    const namedRows = formIngredientRows.filter((r) => r.name && String(r.name).trim());
+    const rowsForLookup = namedRows.map((r) => ({
+      name: String(r.name).trim(),
+      quantity: String(r.quantity || '').trim(),
+      unit: String(r.unit || '').trim(),
+    }));
+
+    const instructJoined = formInstructionSteps.map((s) => String(s || '').trim()).filter(Boolean).join('\n');
+    const detectedEq = detectEquipmentFromInstructions(instructJoined);
+    const equipLower = [
+      ...new Set([...formEquipment.map((e) => String(e).trim().toLowerCase()).filter(Boolean), ...detectedEq]),
+    ].sort((a, b) => a.localeCompare(b));
+
+    const recipeName = $('#form-name').value.trim();
+    const proteinTypeSlugs = normalizeProteinTypeArray(detectProteinTypesFromName(recipeName.toLowerCase()));
+
+    const measurableRows = rowsForLookup.filter((r) => {
+      if (qtyDisabledForUnit(r.unit)) return false;
+      return ingredientQuantityToGrams(r.quantity, r.unit) != null;
+    });
+
+    let usda = { kcal: 0, protein: 0, carbs: 0, fat: 0, failed: [] };
+    try {
+      // Run for any named ingredients (add + edit). Skips "to taste"/unmeasurable inside compute.
+      if (namedRows.length) {
+        usda = await computeUsdaTotalsForIngredients(rowsForLookup);
+      }
+    } catch {
+      usda = {
+        kcal: 0,
+        protein: 0,
+        carbs: 0,
+        fat: 0,
+        failed: measurableRows.map((r) => ({
+          name: r.name,
+          nameLower: r.name.toLowerCase(),
+          quantity: r.quantity,
+          unit: r.unit,
+          displayLine: `${r.name} — ${r.quantity || '?'} ${r.unit} used`,
+        })),
+      };
+    }
+
+    setSaveButtonCalculating(false);
+
+    let totals = { kcal: usda.kcal, protein: usda.protein, carbs: usda.carbs, fat: usda.fat };
+    let incomplete = false;
+
+    if (usda.failed.length > 0) {
+      const choice = await showNutritionFallbackModal(usda.failed);
+      if (choice.cancelled) {
+        if (saveBtn) saveBtn.disabled = false;
+        setSaveButtonCalculating(false);
+        return;
+      }
+      if (choice.skipAll) {
+        incomplete = true;
+      } else {
+        const resolved = choice.resolvedNames || new Set();
+        for (const m of choice.manual || []) {
+          totals.kcal += m.kcal;
+          totals.protein += m.protein;
+          totals.carbs += m.carbs;
+          totals.fat += m.fat;
+        }
+        incomplete = usda.failed.some((fr) => !resolved.has(fr.nameLower));
+      }
+    }
+
+    const hasAnyNutrition =
+      totals.kcal > 0.0001 || totals.protein > 0.0001 || totals.carbs > 0.0001 || totals.fat > 0.0001;
+
+    const payloadCalories = hasAnyNutrition ? Math.round(totals.kcal * 10) / 10 : null;
+    const payloadProtein = hasAnyNutrition ? Math.round(totals.protein * 10) / 10 : null;
+    const payloadCarbs = hasAnyNutrition ? Math.round(totals.carbs * 10) / 10 : null;
+    const payloadFat = hasAnyNutrition ? Math.round(totals.fat * 10) / 10 : null;
+
+    if (!hasAnyNutrition && namedRows.length > 0) {
+      showInfoToast('Recipe saved — add ingredients to calculate nutrition');
+    }
 
     const payload = {
-      name: $('#form-name').value.trim(),
+      name: recipeName,
       image_url: $('#form-image').value.trim() || null,
       prep_time: parseInt($('#form-prep').value, 10),
       servings: parseInt($('#form-servings').value, 10),
       difficulty: $('#form-difficulty').value,
-      cost_estimate: $('#form-cost').value,
       cuisine: normalizeCuisineForSave($('#form-cuisine').value),
-      protein_grams: $('#form-protein').value === '' ? null : parseInt($('#form-protein').value, 10),
-      protein_type: normalizeProteinTypeArray(formProteinTypes),
+      protein_grams: payloadProtein,
+      protein_type: proteinTypeSlugs,
       equipment: equipLower,
       ingredients: ingredientsJson,
       instructions: serializeInstructionSteps(formInstructionSteps),
+      calories: payloadCalories,
+      carbs: payloadCarbs,
+      fat: payloadFat,
     };
 
-    if (saveBtn) saveBtn.disabled = true;
-    pushAsyncLoading();
+    setSaveButtonCalculating(true, 'Saving…');
+
     let error;
+    let savedId = id || null;
     if (id) {
       const res = await supabase.from('recipes').update(payload).eq('id', id);
       error = res.error;
+      savedId = id;
     } else {
-      const res = await supabase.from('recipes').insert(payload);
+      const res = await supabase.from('recipes').insert(payload).select('id').single();
       error = res.error;
+      savedId = res.data && res.data.id;
     }
-    popAsyncLoading();
+
+    setSaveButtonCalculating(false);
     if (saveBtn) saveBtn.disabled = false;
 
     if (error) {
@@ -1282,6 +1790,12 @@
       showError(error.message || 'Could not save recipe.');
       return;
     }
+
+    if (savedId) {
+      if (incomplete) recipeNutritionIncomplete.add(savedId);
+      else recipeNutritionIncomplete.delete(savedId);
+    }
+
     formInitialSnapshot = null;
     closeModal($('#modal-form'));
     await loadRecipes();
@@ -1442,31 +1956,11 @@
     if (nameInp) {
       nameInp.addEventListener('input', () => {
         updateNameCharCount();
-        scheduleProteinDetectFromName();
       });
     }
 
-    const ptInp = $('#protein-type-input');
-    const ptBox = $('#protein-type-suggestions');
-    if (ptInp && ptBox) {
-      ptInp.addEventListener('focus', () => {
-        ptBox.classList.remove('hidden');
-        updateProteinTypeSuggestions();
-      });
-      ptInp.addEventListener('input', () => updateProteinTypeSuggestions());
-      ptInp.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter') return;
-        e.preventDefault();
-        const first = ptBox.querySelector('.protein-type-suggestion');
-        if (first) first.click();
-      });
-      document.addEventListener('click', (e) => {
-        const wrap = $('.protein-type-input-wrap');
-        if (!wrap || wrap.contains(e.target)) return;
-        if (ptBox.classList.contains('hidden')) return;
-        hideProteinTypeSuggestions();
-      });
-    }
+    const nutritionFbPanel = $('#modal-nutrition-fallback .modal-panel');
+    if (nutritionFbPanel) nutritionFbPanel.addEventListener('click', (e) => e.stopPropagation());
 
     $('#equipment-input').addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;

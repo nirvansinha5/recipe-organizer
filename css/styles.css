@@ -66,6 +66,8 @@ body {
 }
 
 .main-area {
+  position: relative;
+  z-index: 1;
   flex: 1;
   min-width: 0;
   padding: 0 24px 48px;
@@ -383,13 +385,6 @@ body {
   color: #2d6a4f;
 }
 
-/* Cost estimate — selected */
-#filter-cost.filter-chip-multi .chip-toggle input:checked + span {
-  background: #fef3ea;
-  border-color: #e07a2f;
-  color: #e07a2f;
-}
-
 .sort-group select {
   padding: 6px 10px;
   border-radius: 8px;
@@ -595,7 +590,7 @@ body {
   flex-direction: row;
   align-items: stretch;
   width: var(--sidebar-collapsed);
-  z-index: 50;
+  z-index: 100;
   transition: width 0.3s ease, box-shadow 0.3s ease;
   box-shadow: -2px 0 16px rgba(0, 0, 0, 0.04);
 }
@@ -767,7 +762,7 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
-  z-index: 200;
+  z-index: 1000;
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -778,30 +773,162 @@ body {
   transition: opacity 0.2s ease, visibility 0.2s ease;
 }
 
+.modal-backdrop > .modal-panel {
+  position: relative;
+  z-index: 1001;
+}
+
 .modal-backdrop.is-open {
   opacity: 1;
   visibility: visible;
 }
 
-/* Confirm dialog above recipe detail / form modals (same .modal-backdrop z-index otherwise stacks by DOM order). */
-#modal-confirm.modal-backdrop {
-  z-index: 9998;
+/* Z-index stack: main 1 · cart 100 · mobile FAB 200+ · toasts 500 · loading 600 · detail 1000/1001 · form 1002/1003 · dialogs 2000/2001 */
+
+#modal-detail.modal-backdrop {
+  z-index: 1000;
+}
+
+#modal-detail.modal-backdrop .modal-panel {
+  position: relative;
+  z-index: 1001;
+}
+
+#modal-form.modal-backdrop {
+  z-index: 1002;
+}
+
+#modal-form.modal-backdrop .modal-panel {
+  position: relative;
+  z-index: 1003;
+}
+
+#modal-confirm.modal-backdrop,
+#modal-form-unsaved.modal-backdrop,
+#modal-nutrition-fallback.modal-backdrop {
+  z-index: 2000;
   background: rgba(0, 0, 0, 0.5);
 }
 
-#modal-confirm.modal-backdrop .modal-panel {
+#modal-confirm.modal-backdrop .modal-panel,
+#modal-form-unsaved.modal-backdrop .modal-panel,
+#modal-nutrition-fallback.modal-backdrop .modal-panel {
   position: relative;
-  z-index: 9999;
+  z-index: 2001;
 }
 
-#modal-form-unsaved.modal-backdrop {
-  z-index: 9998;
-  background: rgba(0, 0, 0, 0.5);
+.nutrition-fallback-subtitle {
+  color: #6b6b6b;
+  margin: 0 0 16px;
+  font-size: 0.95rem;
 }
 
-#modal-form-unsaved.modal-backdrop .modal-panel {
-  position: relative;
-  z-index: 9999;
+.nutrition-fallback-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-height: min(55vh, 420px);
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+
+.nutrition-fallback-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--bg-page);
+}
+
+.nutrition-fallback-context {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.nutrition-fallback-macros {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.nutrition-fallback-macros label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6b6b6b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nutrition-fallback-macros input {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 560px) {
+  .nutrition-fallback-macros {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.nutrition-fallback-serving {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #6b6b6b;
+}
+
+.nutrition-fallback-serving input {
+  width: 72px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font: inherit;
+}
+
+.nutrition-fallback-serving .nf-serving-unit {
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.nutrition-fallback-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.form-save-actions #form-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-save-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: form-save-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.form-save-spinner.hidden {
+  display: none;
+}
+
+@keyframes form-save-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .form-unsaved-panel {
@@ -1033,52 +1160,6 @@ body {
   min-width: 120px;
 }
 
-.protein-type-field .protein-type-input-wrap {
-  position: relative;
-}
-
-.protein-type-suggestions {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 4px);
-  z-index: 30;
-  max-height: 220px;
-  overflow-y: auto;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
-}
-
-.protein-type-suggestions.hidden {
-  display: none;
-}
-
-.protein-type-suggestion {
-  display: block;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  background: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  color: var(--text);
-}
-
-.protein-type-suggestion:hover,
-.protein-type-suggestion:focus {
-  background: var(--bg-page);
-  outline: none;
-}
-
-.form-hint-muted {
-  margin: 6px 0 0;
-  font-size: 0.75rem;
-  color: #6b6b6b;
-}
-
 .detail-protein-types-block {
   margin-top: 8px;
 }
@@ -1147,7 +1228,7 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(248, 248, 246, 0.65);
-  z-index: 250;
+  z-index: 600;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1190,7 +1271,7 @@ body {
   right: 24px;
   left: auto;
   transform: none;
-  z-index: 400;
+  z-index: 500;
   background: #3a2f2f;
   color: #fff;
   padding: 12px 18px;
@@ -1204,6 +1285,29 @@ body {
 }
 
 .toast-error.is-visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.toast-info {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  left: auto;
+  z-index: 500;
+  background: #e8ece9;
+  color: #3d5247;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  max-width: min(92vw, 360px);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.toast-info.is-visible {
   opacity: 1;
   visibility: visible;
 }
@@ -1405,13 +1509,71 @@ body {
   gap: 4px;
 }
 
-.recipe-protein-line {
-  color: #e07a2f;
-  font-size: 0.85rem;
+.recipe-card-stats-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.25;
+  margin-top: 2px;
+}
+
+.recipe-card-stat {
+  flex: 1 1 33.33%;
+  max-width: 33.33%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-top: 2px;
+  justify-content: center;
+  gap: 2px;
+}
+
+.recipe-card-stat--kcal {
+  color: #1a1a1a;
+}
+
+.recipe-card-stat--prot {
+  color: #e07a2f;
+}
+
+.recipe-card-stat--prep {
+  color: #2d6a4f;
+}
+
+.recipe-card-stat .recipe-meta-dash {
+  color: #aaa;
+}
+
+.recipe-card-badge-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  min-height: 22px;
+}
+
+.recipe-card-badge-row .badge {
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 3px 7px;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.badge-card-protein-type {
+  background: #d4edda;
+  color: #2d6a4f;
+  border: none;
 }
 
 .badge-cuisine-outline {
@@ -1454,6 +1616,37 @@ body {
   margin-top: 12px;
 }
 
+.detail-meta-line1 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-bottom: 10px;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.detail-meta-prep {
+  color: #2d6a4f;
+  font-weight: 550;
+}
+
+.detail-meta-sep {
+  color: #6b6b6b;
+  font-weight: 400;
+  user-select: none;
+}
+
+.detail-meta-line2 {
+  margin-bottom: 4px;
+}
+
+.detail-meta-line2 .badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .detail-prep-line {
   color: #2d6a4f;
   font-weight: 550;
@@ -1471,6 +1664,80 @@ body {
   font-weight: 550;
 }
 
+.detail-nutrition-incomplete {
+  margin: 0 0 12px;
+  font-size: 0.82rem;
+  font-style: italic;
+  color: #dc3545;
+}
+
+.detail-nutrition-title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  line-height: 1.4;
+  font-weight: 400;
+  color: inherit;
+}
+
+.detail-nutrition-title-main {
+  color: #2d6a4f;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.detail-nutrition-title-sub {
+  color: #6b6b6b;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.detail-nutrition-empty {
+  color: #6b6b6b;
+  font-style: italic;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.detail-nutrition-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-nutrition-bar-row {
+  display: grid;
+  grid-template-columns: minmax(60px, 72px) 1fr minmax(70px, 80px);
+  align-items: center;
+  gap: 10px;
+}
+
+.detail-nutrition-bar-label {
+  font-size: 0.85rem;
+  color: #6b6b6b;
+}
+
+.detail-nutrition-bar-track {
+  height: 8px;
+  background: #e8e8e4;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.detail-nutrition-bar-fill {
+  height: 100%;
+  background: #2d6a4f;
+  border-radius: 4px;
+  min-width: 0;
+  transition: width 0.25s ease;
+}
+
+.detail-nutrition-bar-value {
+  font-size: 0.85rem;
+  color: #1a1a1a;
+  text-align: right;
+}
+
 .badge-equipment-detail {
   background: #e8f4fd;
   color: #1a5276;
@@ -1479,6 +1746,10 @@ body {
 .modal-body .detail-section h3,
 .modal-body .form-field > label {
   color: #6b6b6b;
+}
+
+.modal-body .detail-section.detail-section-nutrition .detail-nutrition-title {
+  color: inherit;
 }
 
 .form-field input.field-error,
@@ -1752,7 +2023,7 @@ body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  z-index: 1000;
+  z-index: 200;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -1783,7 +2054,7 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
-  z-index: 1001;
+  z-index: 210;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -1804,7 +2075,7 @@ body {
   max-height: 70vh;
   background: #fff;
   border-radius: 16px 16px 0 0;
-  z-index: 1002;
+  z-index: 220;
   display: flex;
   flex-direction: column;
   transform: translateY(100%);
